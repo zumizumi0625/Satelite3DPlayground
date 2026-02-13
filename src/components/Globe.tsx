@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { Viewer, Camera } from 'resium';
-import { createWorldTerrainAsync, Math as CesiumMath } from 'cesium';
+import { createWorldTerrainAsync, Math as CesiumMath, Cartesian3 } from 'cesium';
 // import { Ion } from 'cesium'; // Uncomment when you add your Cesium Ion token
 
 interface ViewportBounds {
@@ -12,10 +12,13 @@ interface ViewportBounds {
 
 interface GlobeProps {
   onBoundsChange?: (bounds: ViewportBounds) => void;
+  viewerRef?: React.MutableRefObject<any>;
+  sceneMode?: '3D' | '2D' | 'Columbus';
 }
 
-const Globe: React.FC<GlobeProps> = ({ onBoundsChange }) => {
-  const viewerRef = useRef<any>(null);
+const Globe: React.FC<GlobeProps> = ({ onBoundsChange, viewerRef: externalViewerRef, sceneMode = '3D' }) => {
+  const internalViewerRef = useRef<any>(null);
+  const viewerRef = externalViewerRef || internalViewerRef;
   const [terrainProvider, setTerrainProvider] = useState<any>(null);
 
   useEffect(() => {
@@ -36,6 +39,112 @@ const Globe: React.FC<GlobeProps> = ({ onBoundsChange }) => {
       }
     };
     loadTerrain();
+  }, []);
+
+  // Handle scene mode changes
+  useEffect(() => {
+    if (!viewerRef.current || !viewerRef.current.cesiumElement) return;
+
+    const viewer = viewerRef.current.cesiumElement;
+    const scene = viewer.scene;
+
+    // Store current camera position before morphing
+    const currentPosition = viewer.camera.positionWC.clone();
+
+    switch (sceneMode) {
+      case '2D':
+        scene.morphTo2D(2.0); // Slower transition for stability
+        // Ensure the camera is positioned correctly after morphing
+        setTimeout(() => {
+          if (viewer.scene.mode === 2) { // SceneMode.SCENE2D
+            viewer.camera.setView({
+              destination: viewer.scene.globe.ellipsoid.cartesianToCartographic(currentPosition)
+            });
+          }
+        }, 2500);
+        break;
+      case '3D':
+        scene.morphTo3D(2.0);
+        break;
+      case 'Columbus':
+        scene.morphToColumbusView(2.0);
+        break;
+    }
+  }, [sceneMode, viewerRef]);
+
+  // Keyboard navigation handler
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!viewerRef.current || !viewerRef.current.cesiumElement) return;
+
+      const viewer = viewerRef.current.cesiumElement;
+      const camera = viewer.camera;
+
+      // Calculate move rate based on current altitude
+      let moveRate;
+      if (camera.positionCartographic) {
+        moveRate = camera.positionCartographic.height / 100.0;
+      } else {
+        // Fallback for 2D mode
+        moveRate = 10000; // Fixed rate for 2D mode
+      }
+
+      // Check if we're in 2D mode (SceneMode.SCENE2D = 2)
+      const is2DMode = viewer.scene.mode === 2;
+
+      switch (event.key) {
+        case 'ArrowUp':
+          if (is2DMode) {
+            camera.moveUp(moveRate);
+          } else {
+            camera.moveForward(moveRate);
+          }
+          handleCameraMove();
+          break;
+        case 'ArrowDown':
+          if (is2DMode) {
+            camera.moveDown(moveRate);
+          } else {
+            camera.moveBackward(moveRate);
+          }
+          handleCameraMove();
+          break;
+        case 'ArrowLeft':
+          camera.moveLeft(moveRate);
+          handleCameraMove();
+          break;
+        case 'ArrowRight':
+          camera.moveRight(moveRate);
+          handleCameraMove();
+          break;
+        case 'PageUp':
+          // In 2D mode, this zooms in
+          if (is2DMode) {
+            camera.zoomIn(2);
+          } else {
+            camera.moveUp(moveRate);
+          }
+          handleCameraMove();
+          break;
+        case 'PageDown':
+          // In 2D mode, this zooms out
+          if (is2DMode) {
+            camera.zoomOut(2);
+          } else {
+            camera.moveDown(moveRate);
+          }
+          handleCameraMove();
+          break;
+      }
+    };
+
+    // Add keyboard event listener
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   // Camera movement handler to track viewport bounds
@@ -76,13 +185,14 @@ const Globe: React.FC<GlobeProps> = ({ onBoundsChange }) => {
         timeline={false}
         vrButton={false}
         geocoder={false}
-        homeButton={true}
-        sceneModePicker={true}
+        homeButton={false}
+        sceneModePicker={false}
         selectionIndicator={false}
         infoBox={false}
         scene3DOnly={false}
         shouldAnimate={true}
         creditContainer={document.createElement('div')} // Hide credits
+        mapMode2D={1} // Use infinite scroll mode for 2D
       >
         {/* Camera component for handling camera events */}
         <Camera
